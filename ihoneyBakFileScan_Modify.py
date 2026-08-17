@@ -232,8 +232,11 @@ def log_success(url: str, content_length: str, output_path: Path, seen: Set[str]
             return
         seen.add(url)
         logging.warning(f"[ success ] {url}  size: {size_str}")
-        with open(output_path, 'a', encoding='utf-8') as f:
-            f.write(f"{url} size:{size_str}\n")
+        try:
+            with open(output_path, 'a', encoding='utf-8') as f:
+                f.write(f"{url} size:{size_str}\n")
+        except OSError as e:
+            logging.warning(f"Failed to write result file {output_path}: {e}")
 
 
 def get_not_found_fingerprint(
@@ -406,7 +409,8 @@ def check_url(
 
 def generate_candidates(base_url: str, prefixes: List[str], suffixes: List[str]) -> List[str]:
     parsed = urlparse(base_url)
-    domain = parsed.netloc.lower().rstrip('.')
+    # hostname excludes the port and userinfo and is already lowercased.
+    domain = (parsed.hostname or '').lower().rstrip('.')
     parts = domain.split('.')
 
     variants: Set[str] = set()
@@ -464,7 +468,6 @@ def scan_targets(
     no_head: bool = False,
     delay: float = 0.0
 ) -> None:
-    session = build_session(max_workers)
     seen_results = seen_results if seen_results is not None else set()
 
     completed: Set[str] = set()
@@ -476,14 +479,23 @@ def scan_targets(
     def mark_done(base_url: str) -> None:
         if state_path is None:
             return
-        with open(state_path, 'a', encoding='utf-8') as f:
-            f.write(base_url + '\n')
+        try:
+            with open(state_path, 'a', encoding='utf-8') as f:
+                f.write(base_url + '\n')
+        except OSError as e:
+            logging.warning(f"Failed to write state file {state_path}: {e}")
 
     total_candidates = 0
     total_scanned = 0
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        session = None
         for idx, base_url in enumerate(targets, 1):
+            # Release the previous site's pooled connections so file
+            # descriptors do not accumulate across many hosts.
+            if session is not None:
+                session.close()
+            session = build_session(max_workers)
             print(f"[{idx}/{len(targets)}] {base_url}")
             if resume and base_url in completed:
                 print("  -> skip: already scanned (resume)")
@@ -492,7 +504,6 @@ def scan_targets(
             accessible, reason = is_site_accessible(base_url, session, connect_timeout, read_timeout, proxies)
             if not accessible:
                 print(f"  -> skip: {reason}")
-                mark_done(base_url)
                 continue
 
             not_found_fingerprint, head_ok = get_not_found_fingerprint(
@@ -656,7 +667,7 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    if args.max_threads < 1:
+    if not args.max_threads or args.max_threads < 1:
         parser.error("--thread must be greater than 0")
 
     output_path = Path(args.output_file) if args.output_file else Path('result.txt')
