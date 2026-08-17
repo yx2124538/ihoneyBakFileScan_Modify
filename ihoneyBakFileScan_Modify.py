@@ -134,7 +134,10 @@ def has_known_magic(sample: bytes, suffix: str) -> bool:
 
 def is_likely_text_error(sample: bytes) -> bool:
     probe = sample[:64].lower()
-    return any(token in probe for token in (b'<!doctype', b'<html', b'<head', b'<body', b'404', b'not found', b'access denied'))
+    return any(token in probe for token in (
+        b'<!doctype', b'<html', b'<head', b'<body', b'404', b'not found',
+        b'access denied', b'forbidden', b'403', b'rate limit', b'too many'
+    ))
 
 
 def is_likely_backup_response(resp: requests.Response) -> bool:
@@ -304,7 +307,7 @@ def assess_head_response(resp: requests.Response, url: str, not_found_fingerprin
     if is_likely_backup_response(resp) and content_length and int(content_length) > 0:
         return True, False
 
-    if looks_like_text_backup(suffix, content_type) and content_length and int(content_length) > 0:
+    if resp.status_code in {200, 206} and looks_like_text_backup(suffix, content_type) and content_length and int(content_length) > 0:
         return True, False
 
     should_fallback = (
@@ -393,8 +396,10 @@ def check_url(
                 log_success(url, size_value, output_path, seen_results)
                 return None
 
-            if looks_like_text_backup(suffix, resp.headers.get('Content-Type', '').lower()) and not is_likely_text_error(sample):
+            if resp.status_code in {200, 206} and looks_like_text_backup(suffix, resp.headers.get('Content-Type', '').lower()) and not is_likely_text_error(sample):
                 size_value = cl if cl and int(cl) > 0 else str(len(sample))
+                if int(size_value) < 64:
+                    return None
                 log_success(url, size_value, output_path, seen_results)
         return None
 
