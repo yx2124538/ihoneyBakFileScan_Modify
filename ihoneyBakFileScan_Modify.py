@@ -378,6 +378,13 @@ def check_url(
                 if not has_download_disposition(resp) and not looks_like_text_backup(suffix, content_type):
                     if suffix not in KNOWN_MAGIC_CHECKS:
                         return None
+                    # Even when the suffix has known magic bytes, reject
+                    # responses that are explicitly HTML/text/XML/JSON.
+                    # WAFs often return a gzip-compressed challenge page
+                    # whose raw bytes start with archive magic headers
+                    # (e.g. \x1f\x8b\x08 for .gz), causing false positives.
+                    if any(t in content_type for t in ('html', 'text', 'xml', 'json', 'javascript')):
+                        return None
 
             cl = resp.headers.get('Content-Length')
             if cl and int(cl) > 0 and (has_download_disposition(resp) or is_likely_backup_response(resp)):
