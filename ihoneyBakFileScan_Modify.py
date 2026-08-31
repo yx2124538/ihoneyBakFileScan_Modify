@@ -346,8 +346,38 @@ def check_url(
                 with head_resp:
                     is_hit, should_fallback = assess_head_response(head_resp, url, not_found_fingerprint)
                     if is_hit:
-                        log_success(url, head_resp.headers['Content-Length'], output_path, seen_results)
-                        return None
+                        cl = head_resp.headers.get('Content-Length', '0')
+                        if cl.isdigit() and int(cl) <= 4:
+                            # Some servers (e.g. nginx with custom modules)
+                            # answer 200 + application/* with a tiny body for
+                            # *any* path via HEAD, but return 404/error on GET.
+                            # Verify with a GET before trusting the HEAD hit.
+                            head_verify = session.get(
+                                url,
+                                headers=make_range_headers(),
+                                timeout=(connect_timeout, read_timeout),
+                                allow_redirects=False,
+                                stream=True,
+                                verify=False,
+                                proxies=proxies
+                            )
+                            with head_verify:
+                                vct = head_verify.headers.get('Content-Type', '').lower()
+                                vcl = head_verify.headers.get('Content-Length', '0')
+                                is_hit = False
+                                should_fallback = False
+                                if (
+                                    head_verify.status_code not in {404, 410}
+                                    and not fingerprint_matches(head_verify, not_found_fingerprint)
+                                    and not is_probably_redirect_trap(head_verify)
+                                    and not any(t in vct for t in ('html', 'text', 'xml', 'json', 'javascript'))
+                                    and vcl.isdigit() and int(vcl) > 0
+                                ):
+                                    log_success(url, vcl, output_path, seen_results)
+                                    return None
+                        else:
+                            log_success(url, cl, output_path, seen_results)
+                            return None
                     if not should_fallback:
                         return None
             except requests.exceptions.Timeout:
@@ -387,7 +417,14 @@ def check_url(
                         return None
 
             cl = resp.headers.get('Content-Length')
-            if cl and int(cl) > 0 and (has_download_disposition(resp) or is_likely_backup_response(resp)):
+            # A real backup is never 1-4 bytes.  Some servers answer 200 +
+            # application/octet-stream with a tiny body for *any* path; only
+            # trust the headers when the body is a plausible size.  Small
+            # responses fall through to the magic-byte / sample checks below.
+            if (
+                cl and cl.isdigit() and int(cl) > 4
+                and (has_download_disposition(resp) or is_likely_backup_response(resp))
+            ):
                 log_success(url, cl, output_path, seen_results)
                 return None
 
